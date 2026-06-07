@@ -14,7 +14,6 @@ WEBSITE_URL = 'https://www.tiksnaps.com/'
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# User Usage Tracking (ဒါက Memory ထဲမှာပဲ သိမ်းမှာပါ၊ Bot restart ကျရင် ပြန် Reset ဖြစ်ပါမယ်)
 user_data = {}
 
 def get_daily_count(user_id):
@@ -32,20 +31,22 @@ async def is_subscribed(context, user_id):
         return member.status in ['member', 'administrator', 'creator']
     except: return False
 
-# API မှ Data ယူခြင်း (Video ရော Photo ပါ ရအောင်)
 async def fetch_tiktok_data(tiktok_url):
     api_url = "https://tiktok-video-no-watermark2.p.rapidapi.com/"
     headers = {"X-RapidAPI-Key": RAPIDAPI_KEY, "X-RapidAPI-Host": "tiktok-video-no-watermark2.p.rapidapi.com"}
     async with httpx.AsyncClient() as client:
         try:
-            res = await client.get(api_url, headers=headers, params={"url": tiktok_url, "hd": "1"}, timeout=20.0)
-            return res.json().get("data") if res.json().get("code") == 0 else None
-        except: return None
+            res = await client.get(api_url, headers=headers, params={"url": tiktok_url, "hd": "1"}, timeout=25.0)
+            json_res = res.json()
+            return json_res.get("data") if json_res.get("code") == 0 else None
+        except Exception as e:
+            logging.error(f"Fetch Error: {e}")
+            return None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if await is_subscribed(context, user_id):
-        await update.message.reply_text("👋 **Welcome!**\nSend me a TikTok link.\n\n🎁 Bot Limit: 5 per day\n🚀 Website: UNLIMITED!")
+        await update.message.reply_text("👋 **Welcome to TikSnaps!**\nSend me a TikTok link to download Video or Photos.\n\n🎁 Bot: 5 per day\n🚀 Web: UNLIMITED!")
     else:
         keyboard = [[InlineKeyboardButton("📢 Join Channel", url=CHANNEL_URL)], [InlineKeyboardButton("✅ Verify", callback_data='check')]]
         await update.message.reply_text("⚠️ **Join our channel first!**", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -59,53 +60,44 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if "tiktok.com" in url:
         count = get_daily_count(user_id)
-        
-        # --- LIMIT CHECK (5 Videos) ---
         if count >= 5:
             keyboard = [[InlineKeyboardButton("🚀 Go to Website (UNLIMITED)", url=WEBSITE_URL)]]
-            await update.message.reply_text(
-                "❌ **DAILY LIMIT REACHED!** (5/5)\n\n"
-                "You can download more on our website!\n\n"
-                "👇 CLICK BELOW 👇",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
+            await update.message.reply_text("❌ **DAILY LIMIT REACHED! (5/5)**\nDownload more on our website!", reply_markup=InlineKeyboardMarkup(keyboard))
             return
 
-        # --- PROCESSING AD ---
-        status_msg = await update.message.reply_text(
-            "⏳ **Processing...**\n\n"
-            "📺 **Video Quality: HD**\n"
-            "🌍 **Web:** [tiksnaps.com](https://www.tiksnaps.com)\n"
-            "🎁 *Unlimited downloads on website!*",
-            disable_web_page_preview=True, parse_mode='Markdown'
-        )
-
+        status_msg = await update.message.reply_text("⏳ **Processing...**\n🌍 [tiksnaps.com](https://www.tiksnaps.com)", disable_web_page_preview=True, parse_mode='Markdown')
         data = await fetch_tiktok_data(url)
+
         if not data:
-            await status_msg.edit_text("❌ Error! Try again or use website.")
+            await status_msg.edit_text("❌ Video/Photo not found! Use website.")
             return
 
-        # MP3 Button (Always goes to website)
         kb = [[InlineKeyboardButton("🎵 Download MP3 Audio", url=WEBSITE_URL)],
               [InlineKeyboardButton("🚀 Unlimited Downloads", url=WEBSITE_URL)]]
         
         try:
-            # CASE 1: Video
-            if data.get("play"):
-                await update.message.reply_video(video=data["play"], caption=f"✅ Done! ({count+1}/5 Today)\n\n🌐 {WEBSITE_URL}", reply_markup=InlineKeyboardMarkup(kb))
-            
-            # CASE 2: Photos (Slideshow)
-            elif data.get("images"):
-                media_group = [InputMediaPhoto(img) for img in data["images"][:10]] # ပထမ ၁၀ ပုံပဲ ပို့မယ် (Telegram limit)
+            # --- ဓာတ်ပုံ (Images) ကို အရင်စစ်ရပါမယ် ---
+            if data.get("images") and len(data["images"]) > 0:
+                images = data["images"]
+                media_group = [InputMediaPhoto(img) for img in images[:10]] # Telegram ဥပဒေအရ ၁၀ ပုံပဲ တစ်ခါပို့ရတယ်
                 await update.message.reply_media_group(media=media_group)
-                await update.message.reply_text(f"✅ Photo Slideshow Done! ({count+1}/5)\n\n🌐 {WEBSITE_URL}", reply_markup=InlineKeyboardMarkup(kb))
+                await update.message.reply_text(f"📸 **Photos Downloaded! ({count+1}/5)**\n🌐 {WEBSITE_URL}", reply_markup=InlineKeyboardMarkup(kb))
             
+            # --- ဗီဒီယို (Video) ကို ဒုတိယမှ စစ်ပါမယ် ---
+            elif data.get("play"):
+                await update.message.reply_video(video=data["play"], caption=f"🎬 **Video Downloaded! ({count+1}/5)**\n🌐 {WEBSITE_URL}", reply_markup=InlineKeyboardMarkup(kb))
+            
+            else:
+                await status_msg.edit_text("❌ Unsupported content type.")
+                return
+
             increment_count(user_id)
             await status_msg.delete()
-        except:
-            await status_msg.edit_text(f"❌ Failed! Use website: {WEBSITE_URL}")
+        except Exception as e:
+            logging.error(f"Send Error: {e}")
+            await status_msg.edit_text("❌ Failed to send! Try our website.")
     else:
-        await update.message.reply_text("❗ Please send a TikTok link.")
+        await update.message.reply_text("❗ Please send a valid TikTok link.")
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -120,7 +112,6 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(handle_callback, pattern='check'))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("TikSnap Bot with Limits is running...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
