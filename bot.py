@@ -14,16 +14,16 @@ WEBSITE_URL = 'https://www.tiksnaps.com/'
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-user_data = {}
+db = {}
 
-def get_daily_count(user_id):
+def get_user(user_id):
     today = datetime.now().strftime('%Y-%m-%d')
-    if user_id not in user_data or user_data[user_id]['date'] != today:
-        user_data[user_id] = {'date': today, 'count': 0}
-    return user_data[user_id]['count']
-
-def increment_count(user_id):
-    user_data[user_id]['count'] += 1
+    if user_id not in db:
+        db[user_id] = {'daily_date': today, 'daily_count': 0, 'invites': 0, 'bonus': 0, 'referred_by': None, 'is_new': True}
+    if db[user_id]['daily_date'] != today:
+        db[user_id]['daily_date'] = today
+        db[user_id]['daily_count'] = 0
+    return db[user_id]
 
 async def is_subscribed(context, user_id):
     try:
@@ -37,19 +37,44 @@ async def fetch_tiktok_data(tiktok_url):
     async with httpx.AsyncClient() as client:
         try:
             res = await client.get(api_url, headers=headers, params={"url": tiktok_url, "hd": "1"}, timeout=25.0)
-            json_res = res.json()
-            return json_res.get("data") if json_res.get("code") == 0 else None
-        except Exception as e:
-            logging.error(f"Fetch Error: {e}")
-            return None
+            return res.json().get("data") if res.json().get("code") == 0 else None
+        except: return None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    user = get_user(user_id)
+    
+    if context.args and user.get('is_new'):
+        referrer_id = int(context.args[0])
+        if referrer_id != user_id and referrer_id in db:
+            user['referred_by'] = referrer_id
+            db[referrer_id]['invites'] += 1
+            if db[referrer_id]['invites'] % 3 == 0:
+                db[referrer_id]['bonus'] += 5
+                try: await context.bot.send_message(chat_id=referrer_id, text="🎉 **SUCCESS!**\n3 Friends Joined! You got **+5 Bonus** downloads! 🎁")
+                except: pass
+            else:
+                count_needed = 3 - (db[referrer_id]['invites'] % 3)
+                try: await context.bot.send_message(chat_id=referrer_id, text=f"👤 **1 Friend Joined!**\nNeed {count_needed} more for Bonus! 🎁")
+                except: pass
+    
+    user['is_new'] = False
+
     if await is_subscribed(context, user_id):
-        await update.message.reply_text("👋 **Welcome to TikSnaps!**\nSend me a TikTok link to download Video or Photos.\n\n🎁 Bot: 5 per day\n🚀 Web: UNLIMITED!")
+        invite_link = f"https://t.me/tikdown_snaps_bot?start={user_id}"
+        msg = (
+            f"👋 **Welcome to TikSnaps!**\n\n"
+            f"🎁 **Daily Free:** 5\n"
+            f"🌟 **Your Bonus:** +{user['bonus']}\n"
+            f"📊 **Used Today:** {user['daily_count']} / {5 + user['bonus']}\n\n"
+            f"🔗 **Your Invite Link:**\n`{invite_link}`\n\n"
+            f"(Invite 3 Friends = Get +5 Bonus! 🎁)"
+        )
+        keyboard = [[InlineKeyboardButton("🚀 Web: UNLIMITED Download", url=WEBSITE_URL)]]
+        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
     else:
         keyboard = [[InlineKeyboardButton("📢 Join Channel", url=CHANNEL_URL)], [InlineKeyboardButton("✅ Verify", callback_data='check')]]
-        await update.message.reply_text("⚠️ **Join our channel first!**", reply_markup=InlineKeyboardMarkup(keyboard))
+        await update.message.reply_text("⚠️ **Please JOIN our channel first!**", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -59,51 +84,51 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if "tiktok.com" in url:
-        count = get_daily_count(user_id)
-        if count >= 5:
-            keyboard = [[InlineKeyboardButton("🚀 Go to Website (UNLIMITED)", url=WEBSITE_URL)]]
-            await update.message.reply_text("❌ **DAILY LIMIT REACHED! (5/5)**\nDownload more on our website!", reply_markup=InlineKeyboardMarkup(keyboard))
+        user = get_user(user_id)
+        max_allowed = 5 + user['bonus']
+        
+        if user['daily_count'] >= max_allowed:
+            invite_link = f"https://t.me/tikdown_snaps_bot?start={user_id}"
+            await update.message.reply_text(
+                f"❌ **LIMIT REACHED!** ({user['daily_count']}/{max_allowed})\n\n"
+                f"1️⃣ **Invite 3 Friends** for +5 more:\n`{invite_link}`\n\n"
+                f"2️⃣ **Use our Website** (No Limit!):\n🚀 {WEBSITE_URL}",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🚀 Go to Website", url=WEBSITE_URL)]]),
+                parse_mode='Markdown'
+            )
             return
 
-        status_msg = await update.message.reply_text("⏳ **Processing...**\n🌍 [tiksnaps.com](https://www.tiksnaps.com)", disable_web_page_preview=True, parse_mode='Markdown')
+        status_msg = await update.message.reply_text("⏳ **Processing...**\n🚀 [tiksnaps.com](https://www.tiksnaps.com)", disable_web_page_preview=True, parse_mode='Markdown')
         data = await fetch_tiktok_data(url)
 
         if not data:
-            await status_msg.edit_text("❌ Video/Photo not found! Use website.")
+            await status_msg.edit_text("❌ **Error!** Video not found.")
             return
 
+        invite_link = f"https://t.me/tikdown_snaps_bot?start={user_id}"
         kb = [[InlineKeyboardButton("🎵 Download MP3 Audio", url=WEBSITE_URL)],
-              [InlineKeyboardButton("🚀 Unlimited Downloads", url=WEBSITE_URL)]]
+              [InlineKeyboardButton("🎁 Get +5 Bonus Downloads", url=f"https://t.me/share/url?url={invite_link}&text=Download%20TikTok%20videos%20without%20watermark!")] ]
         
         try:
-            # --- ဓာတ်ပုံ (Images) ကို အရင်စစ်ရပါမယ် ---
-            if data.get("images") and len(data["images"]) > 0:
-                images = data["images"]
-                media_group = [InputMediaPhoto(img) for img in images[:10]] # Telegram ဥပဒေအရ ၁၀ ပုံပဲ တစ်ခါပို့ရတယ်
+            if data.get("images"):
+                media_group = [InputMediaPhoto(img) for img in data["images"][:10]]
                 await update.message.reply_media_group(media=media_group)
-                await update.message.reply_text(f"📸 **Photos Downloaded! ({count+1}/5)**\n🌐 {WEBSITE_URL}", reply_markup=InlineKeyboardMarkup(kb))
-            
-            # --- ဗီဒီယို (Video) ကို ဒုတိယမှ စစ်ပါမယ် ---
+                await update.message.reply_text(f"📸 **Done!** ({user['daily_count']+1}/{max_allowed})\n🌐 {WEBSITE_URL}", reply_markup=InlineKeyboardMarkup(kb))
             elif data.get("play"):
-                await update.message.reply_video(video=data["play"], caption=f"🎬 **Video Downloaded! ({count+1}/5)**\n🌐 {WEBSITE_URL}", reply_markup=InlineKeyboardMarkup(kb))
+                await update.message.reply_video(video=data["play"], caption=f"🎬 **Done!** ({user['daily_count']+1}/{max_allowed})\n🌐 {WEBSITE_URL}", reply_markup=InlineKeyboardMarkup(kb))
             
-            else:
-                await status_msg.edit_text("❌ Unsupported content type.")
-                return
-
-            increment_count(user_id)
+            user['daily_count'] += 1
             await status_msg.delete()
-        except Exception as e:
-            logging.error(f"Send Error: {e}")
-            await status_msg.edit_text("❌ Failed to send! Try our website.")
+        except:
+            await status_msg.edit_text(f"❌ **Failed!** Use website: {WEBSITE_URL}")
     else:
-        await update.message.reply_text("❗ Please send a valid TikTok link.")
+        await update.message.reply_text("❗ **Please send a TikTok link.**")
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if await is_subscribed(context, query.from_user.id):
-        await query.edit_message_text("✅ Verified! Send your link.")
+        await query.edit_message_text("✅ **Verified!** Send your link.")
     else:
         await query.answer("❌ Join the channel first!", show_alert=True)
 
